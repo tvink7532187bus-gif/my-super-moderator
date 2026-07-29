@@ -118,7 +118,7 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
     return False
 
 
-# Приветствие для обычных пользователей (без админских команд)
+# Приветствие для пользователей (теперь содержит упоминание /admin)
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
   text = (
@@ -127,24 +127,31 @@ async def cmd_start(message: types.Message):
       "• Автоматически удалять ссылки и рекламу\n"
       "• Защищать чат от флуда и спама\n"
       "• Проверять новичков через капчу\n\n"
-      "📋 **Доступные команды:**\n"
-      "• `/id` — узнать ID пользователя или чата"
+      "📋 **Основные команды:**\n"
+      "• `/id` — узнать ID пользователя или чата\n"
+      "• `/admin` — открыть панель команд для модераторов"
   )
   await message.answer(text, parse_mode="Markdown")
 
 
-# Список команд для админов (вызывается отдельно)
+# Понятное меню команд для админов
 @dp.message(Command("admin"))
 async def cmd_admin_help(message: types.Message):
   if not await is_admin(message.chat.id, message.from_user.id):
     return
   text = (
-      "🛡 **Команды для модераторов:**\n\n"
-      "• `/ban [ответ / ID / @username]` — забанить пользователя\n"
-      "• `/mute [время]` — дать мут (например, `/mute 10m` или `/mute 1h`)\n"
-      "• `/clear [кол-во]` — очистить последние сообщения\n"
-      "• `/say [текст]` — написать сообщение от имени бота (анонимно)\n"
-      "• `/lock` — закрыть чат\n"
+      "🛡 **Панель управления для модераторов:**\n\n"
+      "🔨 **Бан пользователя:**\n"
+      "• `/ban [ответ / ID / @username]` — забанить\n"
+      "  *(Пример: `/ban @username` или `/ban 123456789`)*\n\n"
+      "🔇 **Мут (ограничение отправки сообщений):**\n"
+      "• `/mute [время]` в ответ на сообщение — выдать мут\n"
+      "  *(Пример: `/mute 10m` или `/mute 1h`)*\n\n"
+      "🧹 **Очистка чата:**\n"
+      "• `/clear [кол-во]` — удалить последние сообщения (по умолчанию 10)\n\n"
+      "💬 **Прочее:**\n"
+      "• `/say [текст]` — написать сообщение от имени бота\n"
+      "• `/lock` — закрыть чат (удалять сообщения обычных участников)\n"
       "• `/unlock` — открыть чат"
   )
   await message.reply(text, parse_mode="Markdown")
@@ -221,7 +228,7 @@ async def process_captcha(query: types.CallbackQuery):
     pass
 
 
-# Бан (поддерживает ответ, ID и @username)
+# Бан (поддерживает ответ, ID и @username из базы чата)
 @dp.message(Command("ban"))
 async def cmd_ban(message: types.Message, command: CommandObject):
   if not await is_admin(message.chat.id, message.from_user.id):
@@ -243,16 +250,15 @@ async def cmd_ban(message: types.Message, command: CommandObject):
       if target_id:
         target_name = arg
       else:
-        try:
-          chat_user = await bot.get_chat(arg)
-          target_id = chat_user.id
-          target_name = chat_user.full_name or arg
-        except Exception:
-          await message.reply(
-              "❌ Не удалось найти пользователя по такому юзернейму."
-              " Убедитесь, что юзернейм написан правильно."
-          )
-          return
+        await message.reply(
+            "❌ **Не удалось найти пользователя в базе чата.**\n\nTelegram"
+            " технически не позволяет ботам искать пользователей по юзернейму,"
+            " если они ничего не писали в чате.\n💡 **Решение:** Укажите"
+            " числовой ID пользователя вместо юзернейма (например: `/ban"
+            " 123456789`).",
+            parse_mode="Markdown",
+        )
+        return
 
   if target_id:
     try:
