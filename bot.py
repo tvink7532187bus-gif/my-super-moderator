@@ -28,10 +28,10 @@ async def init_db():
             )
         """)
     await db.execute("""
-            CREATE TABLE IF NOT EXISTS warns (
+            CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER,
                 chat_id INTEGER,
-                count INTEGER DEFAULT 0,
+                username TEXT,
                 PRIMARY KEY (user_id, chat_id)
             )
         """)
@@ -45,6 +45,29 @@ async def add_chat(chat_id: int, title: str):
         (chat_id, title),
     )
     await db.commit()
+
+
+async def save_user_info(user_id: int, chat_id: int, username: str):
+  if not username:
+    return
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "INSERT OR REPLACE INTO users (user_id, chat_id, username) VALUES (?,"
+        " ?, ?)",
+        (user_id, chat_id, username.lower()),
+    )
+    await db.commit()
+
+
+async def get_user_id_by_username(chat_id: int, username: str) -> int | None:
+  clean_username = username.lstrip("@").lower()
+  async with aiosqlite.connect(DB_NAME) as db:
+    async with db.execute(
+        "SELECT user_id FROM users WHERE chat_id = ? AND username = ?",
+        (chat_id, clean_username),
+    ) as cursor:
+      row = await cursor.fetchone()
+      return row[0] if row else None
 
 
 async def get_all_chats():
@@ -71,30 +94,6 @@ async def is_chat_locked(chat_id: int) -> bool:
       return bool(row[0]) if row else False
 
 
-async def add_warn(user_id: int, chat_id: int) -> int:
-  async with aiosqlite.connect(DB_NAME) as db:
-    async with db.execute(
-        "SELECT count FROM warns WHERE user_id = ? AND chat_id = ?",
-        (user_id, chat_id),
-    ) as cursor:
-      row = await cursor.fetchone()
-      count = (row[0] + 1) if row else 1
-    await db.execute(
-        "INSERT OR REPLACE INTO warns (user_id, chat_id, count) VALUES (?, ?, ?)",
-        (user_id, chat_id, count),
-    )
-    await db.commit()
-    return count
-
-
-async def reset_warns(user_id: int, chat_id: int):
-  async with aiosqlite.connect(DB_NAME) as db:
-    await db.execute(
-        "DELETE FROM warns WHERE user_id = ? AND chat_id = ?", (user_id, chat_id)
-    )
-    await db.commit()
-
-
 # --- ОСНОВНОЙ БОТ ---
 TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
@@ -119,7 +118,7 @@ async def is_admin(chat_id: int, user_id: int) -> bool:
     return False
 
 
-# Приветствие и список команд
+# Приветствие для обычных пользователей (без админских команд)
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
   text = (
@@ -128,22 +127,32 @@ async def cmd_start(message: types.Message):
       "• Автоматически удалять ссылки и рекламу\n"
       "• Защищать чат от флуда и спама\n"
       "• Проверять новичков через капчу\n\n"
-      "📋 **Команды для модераторов:**\n"
-      "• `/ban [ответ / ID / @username]` — забанить пользователя\n"
-      "• `/mute [время]` — дать мут (например, `/mute 10m` или `/mute 1h`)\n"
-      "• `/warn` — выдать предупреждение (3 варна = мут на 24 часа)\n"
-      "• `/id [ответ / @username]` — узнать ID пользователя или чата\n"
-      "• `/clear [кол-во]` — очистить последние сообщения\n"
-      "• `/say [текст]` — написать сообщение от имени бота (анонимно)\n"
-      "• `/lock` — закрыть чат\n"
-      "• `/unlock` — открыть чат\n"
+      "📋 **Доступные команды:**\n"
+      "• `/id` — узнать ID пользователя или чата"
   )
   await message.answer(text, parse_mode="Markdown")
 
 
-# Команда /id (поддерживает ответ, юзернейм и собственный ID)
+# Список команд для админов (вызывается отдельно)
+@dp.message(Command("admin"))
+async def cmd_admin_help(message: types.Message):
+  if not await is_admin(message.chat.id, message.from_user.id):
+    return
+  text = (
+      "🛡 **Команды для модераторов:**\n\n"
+      "• `/ban [ответ / ID / @username]` — забанить пользователя\n"
+      "• `/mute [время]` — дать мут (например, `/mute 10m` или `/mute 1h`)\n"
+      "• `/clear [кол-во]` — очистить последние сообщения\n"
+      "• `/say [текст]` — написать сообщение от имени бота (анонимно)\n"
+      "• `/lock` — закрыть чат\n"
+      "• `/unlock` — открыть чат"
+  )
+  await message.reply(text, parse_mode="Markdown")
+
+
+# Команда /id
 @dp.message(Command("id"))
-async def cmd_id(message: types.Message, command: CommandObject):
+async def cmd_id(message: types.Message):
   if message.reply_to_message:
     target = message.reply_to_message.from_user
     await message.reply(
@@ -151,21 +160,6 @@ async def cmd_id(message: types.Message, command: CommandObject):
         f" **Username:** @{target.username or 'отсутствует'}",
         parse_mode="Markdown",
     )
-  elif command.args:
-    arg = command.args.strip()
-    username = arg if arg.startswith("@") else f"@{arg}"
-    try:
-      chat_user = await bot.get_chat(username)
-      await message.reply(
-          f"👤 **Пользователь:**"
-          f" {chat_user.full_name or 'Без имени'}\n🆔 **ID:**"
-          f" `{chat_user.id}`\n🏷 **Username:** @{chat_user.username or arg}",
-          parse_mode="Markdown",
-      )
-    except Exception:
-      await message.reply(
-          "❌ Не удалось найти пользователя по такому юзернейму."
-      )
   else:
     user = message.from_user
     await message.reply(
@@ -181,6 +175,8 @@ async def welcome_new_member(message: types.Message):
   for user in message.new_chat_members:
     if user.id == bot.id:
       continue
+    if user.username:
+      await save_user_info(user.id, message.chat.id, user.username)
     try:
       await bot.restrict_chat_member(
           message.chat.id,
@@ -242,17 +238,21 @@ async def cmd_ban(message: types.Message, command: CommandObject):
     if arg.isdigit():
       target_id = int(arg)
       target_name = f"ID {target_id}"
-    elif arg.startswith("@") or not arg.isdigit():
-      username = arg if arg.startswith("@") else f"@{arg}"
-      try:
-        chat_user = await bot.get_chat(username)
-        target_id = chat_user.id
-        target_name = chat_user.full_name or arg
-      except Exception:
-        await message.reply(
-            "❌ Не удалось найти пользователя по такому юзернейму."
-        )
-        return
+    elif arg.startswith("@"):
+      target_id = await get_user_id_by_username(message.chat.id, arg)
+      if target_id:
+        target_name = arg
+      else:
+        try:
+          chat_user = await bot.get_chat(arg)
+          target_id = chat_user.id
+          target_name = chat_user.full_name or arg
+        except Exception:
+          await message.reply(
+              "❌ Не удалось найти пользователя по такому юзернейму."
+              " Убедитесь, что юзернейм написан правильно."
+          )
+          return
 
   if target_id:
     try:
@@ -290,31 +290,6 @@ async def cmd_mute(message: types.Message, command: CommandObject):
   await message.reply(
       f"🔇 {target.full_name} отправлен в мут на {minutes} минут."
   )
-
-
-@dp.message(Command("warn"))
-async def cmd_warn(message: types.Message):
-  if not await is_admin(
-      message.chat.id, message.from_user.id
-  ) or not message.reply_to_message:
-    return
-  target = message.reply_to_message.from_user
-  warns = await add_warn(target.id, message.chat.id)
-  if warns >= 3:
-    await reset_warns(target.id, message.chat.id)
-    await bot.restrict_chat_member(
-        message.chat.id,
-        target.id,
-        permissions=ChatPermissions(can_send_messages=False),
-        until_date=timedelta(hours=24),
-    )
-    await message.reply(
-        f"⚠️ {target.full_name} получил 3/3 варнов и замучен на 24 часа."
-    )
-  else:
-    await message.reply(
-        f"⚠️ {target.full_name} получил предупреждение ({warns}/3)."
-    )
 
 
 @dp.message(Command("clear"))
@@ -391,16 +366,19 @@ async def cmd_broadcast(message: types.Message, command: CommandObject):
 # Главный фильтр сообщений (Анти-флуд, Анти-ссылки, Закрытый чат)
 @dp.message(F.chat.type.in_(["group", "supergroup"]))
 async def message_filter(message: types.Message):
-  await add_chat(message.chat.id, message.chat.title)
+  chat_id = message.chat.id
+  user = message.from_user
+
+  await add_chat(chat_id, message.chat.title)
+  if user.username:
+    await save_user_info(user.id, chat_id, user.username)
 
   # Админов не проверяем на флуд и ссылки
-  if await is_admin(message.chat.id, message.from_user.id):
+  if await is_admin(chat_id, user.id):
     return
 
   # 1. Проверка на анти-флуд (больше 4 сообщений за 3 секунды)
-  chat_id = message.chat.id
-  user_id = message.from_user.id
-  cache_key = (chat_id, user_id)
+  cache_key = (chat_id, user.id)
   now = asyncio.get_event_loop().time()
 
   if cache_key not in user_flood_cache:
@@ -416,13 +394,13 @@ async def message_filter(message: types.Message):
       await message.delete()
       await bot.restrict_chat_member(
           chat_id,
-          user_id,
+          user.id,
           permissions=ChatPermissions(can_send_messages=False),
           until_date=timedelta(minutes=5),
       )
       warn_msg = await message.answer(
-          f"🔇 {message.from_user.first_name}, анти-флуд! Вы отправляете"
-          " сообщения слишком быстро (мут на 5 минут)."
+          f"🔇 {user.first_name}, анти-флуд! Вы отправляете сообщения слишком"
+          " быстро (мут на 5 минут)."
       )
       await asyncio.sleep(5)
       await warn_msg.delete()
@@ -443,7 +421,7 @@ async def message_filter(message: types.Message):
     try:
       await message.delete()
       warning = await message.answer(
-          f"🚫 {message.from_user.first_name}, ссылки запрещены!"
+          f"🚫 {user.first_name}, ссылки запрещены!"
       )
       await asyncio.sleep(5)
       await warning.delete()
@@ -473,4 +451,4 @@ async def main():
 if __name__ == "__main__":
   logging.basicConfig(level=logging.INFO)
   asyncio.run(main())
-        
+      
