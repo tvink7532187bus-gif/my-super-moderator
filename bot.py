@@ -8,6 +8,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
 from aiogram.enums import ChatMemberStatus
 import aiosqlite
+from aiohttp import web
 
 # --- БАЗА ДАННЫХ (SQLite) ---
 DB_NAME = "bot_data.db"
@@ -209,10 +210,26 @@ async def message_filter(message: types.Message):
             await warning.delete()
         except: pass
 
+# Веб-сервер для бесплатного тарифа Render Web Service
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
 async def main():
     await init_db()
+    
+    # Запуск мини-сервера для Render
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    
+    # Запуск бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
+    
